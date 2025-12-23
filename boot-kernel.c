@@ -61,17 +61,126 @@ struct virtio_blk_status {
         uint32_t queue_avail_low;
         uint32_t queue_used_high;
         uint32_t queue_used_low;
+        uint16_t last_avail_index;
+
+        uint32_t interrupt_status;
 };
+
+struct virtq_desc {
+    uint64_t addr;
+    uint32_t len;
+    uint16_t flags;
+    uint16_t next;
+};
+
+struct virtq_avail {
+    uint16_t flags;
+    uint16_t idx;
+    uint16_t ring[];
+};
+
+struct virtq_used_elem {
+    uint32_t id;
+    uint32_t len;
+};
+
+struct virtq_used {
+    uint16_t flags;
+    uint16_t idx;
+    struct virtq_used_elem ring[];
+};
+
+struct virtio_blk_req {
+    uint32_t type;
+    uint32_t reserved;
+    uint64_t sector;
+};
+
+// When guest does write/MMIO to QUEUE_NOTIFIY, VMM invoke this function, then
+// reads virtqueue and execute IO. Finnaly this function raise IRQ to the guest.
+void process_io(void *guest_mem, struct virtio_blk_status *blk_status, int disk_fd, int vm_fd) {
+    // TODO: Don't calculate these addresses every time. Cache them.
+    uint64_t desc_addr = (uint64_t)blk_status->queue_desc_high << 32 | blk_status->queue_desc_low; // size: 16 * queue_size
+    uint64_t avail_addr = (uint64_t)blk_status->queue_avail_high << 32 | blk_status->queue_avail_low; // size: 6 + 2 * queue_size
+    uint64_t used_addr = (uint64_t)blk_status->queue_used_high << 32 | blk_status->queue_used_low; // size: 6 + 8 * queue_size
+    struct virtq_desc *desc_ring = guest_mem + desc_addr;
+    struct virtq_avail *avail = guest_mem + avail_addr;
+    struct virtq_used *used = guest_mem + used_addr;
+    int err;
+
+    while (blk_status->last_avail_index != avail->idx) {
+        uint16_t desc_idx = avail->ring[blk_status->last_avail_index % blk_status->queue_size];
+
+        struct virtq_desc *desc = &desc_ring[desc_idx];
+        fprintf(stderr, "[VIRTIO: BLK: desc(%d): at 0x%lx with size = 0x%x, next = %d]\n", desc_idx, desc->addr, desc->len, desc->next);
+
+        struct virtio_blk_req *req = guest_mem + desc->addr;
+        fprintf(stderr, "[VIRTIO: BLK: req: type = %d]\n", req->type);
+
+        struct virtq_desc *data_desc = &desc_ring[desc->next];
+        struct virtq_desc *status_desc = &desc_ring[data_desc->next];
+
+        if (req->type == VIRTIO_BLK_T_IN) {
+            // seek
+            err = lseek(disk_fd, req->sector * 512, SEEK_SET);
+            if (err == -1) {
+                fprintf(stderr, "[VIRTIO: BLK: seek err]\n");
+            }
+        
+            // read
+            err = read(disk_fd, (void *)(guest_mem + data_desc->addr), data_desc->len);
+            if (err == -1) {
+                fprintf(stderr, "[VIRTIO: BLK: read err]\n");
+            }
+
+            *(uint8_t *)(guest_mem + status_desc->addr) = VIRTIO_BLK_S_OK;
+        } else if (req->type == VIRTIO_BLK_T_OUT) {
+            *(uint8_t *)(guest_mem + status_desc->addr) = VIRTIO_BLK_S_IOERR;
+        } else {
+            *(uint8_t *)(guest_mem + status_desc->addr) = VIRTIO_BLK_S_UNSUPP;
+        }
+
+        used->ring[used->idx % blk_status->queue_size].id = desc_idx;
+        used->ring[used->idx % blk_status->queue_size].len = 1;
+        used->idx++;
+
+        blk_status->last_avail_index++;
+    }
+
+    blk_status->interrupt_status |= 1 << 0; // used ring updated
+    struct kvm_irq_level irq = {
+        .irq = 5,
+        .level = 1, // level とは？
+    };
+    err = ioctl(vm_fd, KVM_IRQ_LINE, &irq);
+    if (err)
+        fprintf(stderr, "[VIRTIO: BLK: KVM_IRQ_LINE (asserting IRQ) failed]\n");
+}
 
 int main(int argc, char *argv[]) {
         struct virtio_blk_status blk_status = {0};
         struct virtio_blk_config blk_config = {0};
-        blk_config.capacity = 2000; // 1MiB (in 512 bytes unit)
+        uint64_t disk_size;
+        int disk_fd;
+        int err;
 
         if (argc != 2) {
                 fprintf(stderr, "Usage: %s <bzImage>\n", argv[0]);
                 return 1;
         }
+
+        // TODO: allow choosing rootfs via cmdline
+        disk_fd = open("/home/kohei/myqemu/Fedora-Server-KVM-Desktop-42.x86_64.ext4", O_RDONLY);
+        if (disk_fd < 0) {
+                perror("open rootfs");
+                return 1;
+        }
+
+        struct stat st;
+        fstat(disk_fd, &st);
+        disk_size = st.st_size;
+
+        blk_config.capacity = (disk_size - 1) / 512 + 1;
 
         int kernel_fd = open(argv[1], O_RDONLY);
         if (kernel_fd < 0) {
@@ -79,7 +188,6 @@ int main(int argc, char *argv[]) {
                 return 1;
         }
 
-        struct stat st;
         fstat(kernel_fd, &st);
 
         void *kernel_data =
@@ -527,13 +635,31 @@ int main(int argc, char *argv[]) {
                                 break;
                             fprintf(stderr, "[VIRTIO: blk: QUEUE (%d) NOTIFIED]\n", blk_status.queue_sel);
                             // TODO: process IO
+                            process_io(mem, &blk_status, disk_fd, vm_fd);
+                            break;
+                        case VIRTIO_MMIO_INTERRUPT_STATUS:
+                            if (run->mmio.is_write)
+                                break;
+                            *(uint32_t *)run->mmio.data = blk_status.interrupt_status;
+                            break;
+                        case VIRTIO_MMIO_INTERRUPT_ACK:
+                            if (!run->mmio.is_write)
+                                break;
+                            blk_status.interrupt_status &= ~(*(uint32_t *)run->mmio.data);
+                            struct kvm_irq_level irq = {
+                                .irq = 5,
+                                .level = 0, // level とは？
+                            };
+                            err = ioctl(vm_fd, KVM_IRQ_LINE, &irq);
+                            if (err)
+                                fprintf(stderr, "[VIRTIO: BLK: KVM_IRQ_LINE (deasserting IRQ) failed]\n");
                             break;
                         case 0x100 ... 0x1ff: // 0x1ff まで？
                             uint32_t config_offset = offset - 0x100;
                             if (run->mmio.is_write) {
-                                memcpy(&blk_config + config_offset, run->mmio.data, run->mmio.len);
+                                memcpy((void *)&blk_config + config_offset, run->mmio.data, run->mmio.len);
                             } else {
-                                memcpy(run->mmio.data, &blk_config + config_offset, run->mmio.len);
+                                memcpy(run->mmio.data, (void *)&blk_config + config_offset, run->mmio.len);
                             }
                             break;
                         case VIRTIO_MMIO_STATUS:
