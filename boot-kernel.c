@@ -518,7 +518,7 @@ int main(int argc, char *argv[]) {
                             blk_status.queue_used_low = *(uint32_t *)run->mmio.data;
                             break;
                         case VIRTIO_MMIO_CONFIG_GENERATION:
-                            if (!run->mmio.is_write)
+                            if (run->mmio.is_write)
                                 break;
                             *(uint32_t *)run->mmio.data = 0xbeef; // static value as of now
                             break;
