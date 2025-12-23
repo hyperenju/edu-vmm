@@ -147,6 +147,7 @@ void process_io(void *guest_mem, struct virtio_blk_status *blk_status, int disk_
     }
 
     blk_status->interrupt_status |= 1 << 0; // used ring updated
+    // TODO: Don't hardcode irq number
     struct kvm_irq_level irq = {
         .irq = 5,
         .level = 1, // assert
