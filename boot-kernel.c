@@ -150,7 +150,7 @@ void process_io(void *guest_mem, struct virtio_blk_status *blk_status, int disk_
     blk_status->interrupt_status |= 1 << 0; // used ring updated
     struct kvm_irq_level irq = {
         .irq = 5,
-        .level = 1, // level とは？
+        .level = 1, // assert
     };
     err = ioctl(vm_fd, KVM_IRQ_LINE, &irq);
     if (err)
@@ -648,7 +648,7 @@ int main(int argc, char *argv[]) {
                             blk_status.interrupt_status &= ~(*(uint32_t *)run->mmio.data);
                             struct kvm_irq_level irq = {
                                 .irq = 5,
-                                .level = 0, // level とは？
+                                .level = 0, // deassert
                             };
                             err = ioctl(vm_fd, KVM_IRQ_LINE, &irq);
                             if (err)
