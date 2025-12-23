@@ -192,8 +192,8 @@ int main(int argc, char *argv[]) {
 
         // i8042 は無効化する。firecracker を参考にした。
         const char *cmdline =
-            "console=ttyS0 audit=0 selinux=0 root=/dev/vda nokaslr "
-            "i8042.noaux i8042.nomux i8042.dumbkbd debug "
+            "console=ttyS0 audit=0 selinux=0 root=/dev/vda nokaslr ro "
+            "i8042.noaux i8042.nomux i8042.dumbkbd "
             "virtio_mmio.device=0x1000@0x80000000:5"; // memory
                                                        // と被らないように適当に配置。サイズも余分に確保. irq を最初適当に50にしてたら、多分 request irq が失敗した。
         strcpy((char *)mem + CMDLINE_ADDR, cmdline);
