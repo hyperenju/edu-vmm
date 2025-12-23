@@ -47,23 +47,25 @@ static void setup_paging(void *mem) {
         }
 }
 
+struct virtio_queue {
+    uint64_t desc_guest_addr;
+    uint64_t avail_guest_addr;
+    uint64_t used_guest_addr;
+
+    uint32_t queue_ready;
+    uint32_t queue_size;
+
+    uint16_t last_avail_index;
+};
+
 struct virtio_blk_status {
         uint32_t status;
         uint32_t device_feature_sel;
         uint32_t driver_feature_sel;
-        // TODO: split queue related fields to virtio_queue like structure
         uint32_t queue_sel;
-        uint32_t queue_ready;
-        uint32_t queue_size;
-        uint32_t queue_desc_high;
-        uint32_t queue_desc_low;
-        uint32_t queue_avail_high;
-        uint32_t queue_avail_low;
-        uint32_t queue_used_high;
-        uint32_t queue_used_low;
-        uint16_t last_avail_index;
-
         uint32_t interrupt_status;
+
+        struct virtio_queue queue;
 };
 
 struct virtq_desc {
@@ -100,16 +102,13 @@ struct virtio_blk_req {
 // reads virtqueue and execute IO. Finnaly this function raise IRQ to the guest.
 void process_io(void *guest_mem, struct virtio_blk_status *blk_status, int disk_fd, int vm_fd) {
     // TODO: Don't calculate these addresses every time. Cache them.
-    uint64_t desc_addr = (uint64_t)blk_status->queue_desc_high << 32 | blk_status->queue_desc_low; // size: 16 * queue_size
-    uint64_t avail_addr = (uint64_t)blk_status->queue_avail_high << 32 | blk_status->queue_avail_low; // size: 6 + 2 * queue_size
-    uint64_t used_addr = (uint64_t)blk_status->queue_used_high << 32 | blk_status->queue_used_low; // size: 6 + 8 * queue_size
-    struct virtq_desc *desc_ring = guest_mem + desc_addr;
-    struct virtq_avail *avail = guest_mem + avail_addr;
-    struct virtq_used *used = guest_mem + used_addr;
+    struct virtq_desc *desc_ring = guest_mem + blk_status->queue.desc_guest_addr;
+    struct virtq_avail *avail = guest_mem + blk_status->queue.avail_guest_addr;
+    struct virtq_used *used = guest_mem + blk_status->queue.used_guest_addr;
     int err;
 
-    while (blk_status->last_avail_index != avail->idx) {
-        uint16_t desc_idx = avail->ring[blk_status->last_avail_index % blk_status->queue_size];
+    while (blk_status->queue.last_avail_index != avail->idx) {
+        uint16_t desc_idx = avail->ring[blk_status->queue.last_avail_index % blk_status->queue.queue_size];
 
         struct virtq_desc *desc = &desc_ring[desc_idx];
         fprintf(stderr, "[VIRTIO: BLK: desc(%d): at 0x%lx with size = 0x%x, next = %d]\n", desc_idx, desc->addr, desc->len, desc->next);
@@ -140,11 +139,11 @@ void process_io(void *guest_mem, struct virtio_blk_status *blk_status, int disk_
             *(uint8_t *)(guest_mem + status_desc->addr) = VIRTIO_BLK_S_UNSUPP;
         }
 
-        used->ring[used->idx % blk_status->queue_size].id = desc_idx;
-        used->ring[used->idx % blk_status->queue_size].len = 1;
+        used->ring[used->idx % blk_status->queue.queue_size].id = desc_idx;
+        used->ring[used->idx % blk_status->queue.queue_size].len = 1;
         used->idx++;
 
-        blk_status->last_avail_index++;
+        blk_status->queue.last_avail_index++;
     }
 
     blk_status->interrupt_status |= 1 << 0; // used ring updated
@@ -566,14 +565,14 @@ int main(int argc, char *argv[]) {
                         case VIRTIO_MMIO_QUEUE_READY: // RW
                             // TODO: check sanity of QUEUE_SEL
                             if (run->mmio.is_write) {
-                                blk_status.queue_ready = *(uint32_t *)run->mmio.data;
+                                blk_status.queue.queue_ready = *(uint32_t *)run->mmio.data;
                                 fprintf(stderr, "[VIRTIO: blk: queue(%d) %s]\n",
                                         blk_status.queue_sel,
-                                        blk_status.queue_ready == 1
+                                        blk_status.queue.queue_ready == 1
                                             ? "READY"
                                             : "NOT READY");
                             } else {
-                                *(uint32_t *)run->mmio.data = blk_status.queue_ready;
+                                *(uint32_t *)run->mmio.data = blk_status.queue.queue_ready;
                             }
                             break;
                         case VIRTIO_MMIO_QUEUE_NUM_MAX:
@@ -591,39 +590,39 @@ int main(int argc, char *argv[]) {
                                 break;
                             if (blk_status.queue_sel != 0)
                                 break; // the specified queue is not existent
-                            blk_status.queue_size = *(uint32_t *)run->mmio.data;
-                            fprintf(stderr, "[VIRTIO: blk: queue size (%d) is negotiated]\n", blk_status.queue_size);
+                            blk_status.queue.queue_size = *(uint32_t *)run->mmio.data;
+                            fprintf(stderr, "[VIRTIO: blk: queue size (%d) is negotiated]\n", blk_status.queue.queue_size);
                             // TODO: check sanity of given queue_size
                             break;
                         case VIRTIO_MMIO_QUEUE_DESC_HIGH:
                             if (!run->mmio.is_write)
                                 break;
-                            blk_status.queue_desc_high = *(uint32_t *)run->mmio.data;
+                            blk_status.queue.desc_guest_addr |= (uint64_t)(*(uint32_t *)run->mmio.data) << 32;
                             break;
                         case VIRTIO_MMIO_QUEUE_DESC_LOW:
                             if (!run->mmio.is_write)
                                 break;
-                            blk_status.queue_desc_low = *(uint32_t *)run->mmio.data;
+                            blk_status.queue.desc_guest_addr |= (uint64_t)(*(uint32_t *)run->mmio.data);
                             break;
                         case VIRTIO_MMIO_QUEUE_AVAIL_HIGH:
                             if (!run->mmio.is_write)
                                 break;
-                            blk_status.queue_avail_high = *(uint32_t *)run->mmio.data;
+                            blk_status.queue.avail_guest_addr |= (uint64_t)(*(uint32_t *)run->mmio.data) << 32;
                             break;
                         case VIRTIO_MMIO_QUEUE_AVAIL_LOW:
                             if (!run->mmio.is_write)
                                 break;
-                            blk_status.queue_avail_low = *(uint32_t *)run->mmio.data;
+                            blk_status.queue.avail_guest_addr |= (uint64_t)(*(uint32_t *)run->mmio.data);
                             break;
                         case VIRTIO_MMIO_QUEUE_USED_HIGH:
                             if (!run->mmio.is_write)
                                 break;
-                            blk_status.queue_used_high = *(uint32_t *)run->mmio.data;
+                            blk_status.queue.used_guest_addr |= (uint64_t)(*(uint32_t *)run->mmio.data) << 32;
                             break;
                         case VIRTIO_MMIO_QUEUE_USED_LOW:
                             if (!run->mmio.is_write)
                                 break;
-                            blk_status.queue_used_low = *(uint32_t *)run->mmio.data;
+                            blk_status.queue.used_guest_addr |= (uint64_t)(*(uint32_t *)run->mmio.data);
                             break;
                         case VIRTIO_MMIO_CONFIG_GENERATION:
                             if (run->mmio.is_write)
