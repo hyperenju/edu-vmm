@@ -233,69 +233,89 @@ static void dump_status(uint32_t status) {
         fprintf(stderr, ")]\n");
 }
 
+#define DUMMY_VENDOR_ID 0x0
+#define VIRTIO_MMIO_MAGIC "virt"
+#define VIRTIO_MMIO_VERSION_MODERN 2
+
 static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virtio_blk_dev *blk_dev) {
         uint32_t mmio_offset = (uint32_t)mmio->phys_addr - VIRTIO_BLK_MMIO_BASE;
-        uint32_t len = mmio->len;
-        int err;
+
+        /* access to MMIO configuration space */
+        if (mmio_offset >= VIRTIO_MMIO_CONFIG && mmio_offset < VIRTIO_MMIO_CONFIG + sizeof(struct virtio_blk_config)) {
+                uint32_t config_offset = mmio_offset - VIRTIO_MMIO_CONFIG;
+
+                if (mmio->is_write) {
+                        memcpy((void *)&blk_dev->config + config_offset,
+                               mmio->data, mmio->len);
+                } else {
+                        memcpy(mmio->data,
+                               (void *)&blk_dev->config + config_offset,
+                               mmio->len);
+                }
+
+                return;
+        }
+
+        /* access to MMIO registers */
+        if (mmio->len != 4)
+                return;
 
         switch (mmio_offset) {
         case VIRTIO_MMIO_MAGIC_VALUE:
-                if (mmio->is_write || len != 4)
+                if (mmio->is_write)
                         break;
-                memcpy(mmio->data, &"virt", 4);
+                memcpy(mmio->data, &VIRTIO_MMIO_MAGIC, 4);
                 break;
         case VIRTIO_MMIO_VERSION:
-                if (mmio->is_write || len != 4)
+                if (mmio->is_write)
                         break;
-                *(uint32_t *)mmio->data = 0x2;
+                *(uint32_t *)mmio->data = VIRTIO_MMIO_VERSION_MODERN;
                 break;
         case VIRTIO_MMIO_DEVICE_ID:
-                if (mmio->is_write || len != 4)
+                if (mmio->is_write)
                         break;
-                *(uint32_t *)mmio->data = 0x2; // virtio-blk: 0x2
+                *(uint32_t *)mmio->data = VIRTIO_ID_BLOCK;
                 break;
         case VIRTIO_MMIO_VENDOR_ID:
-                if (mmio->is_write || len != 4)
+                if (mmio->is_write)
                         break;
-                memset(mmio->data, 0, 4); // dummy
+                *(uint32_t *)mmio->data = DUMMY_VENDOR_ID;
                 break;
         case VIRTIO_MMIO_DEVICE_FEATURES_SEL:
-                if (!mmio->is_write || len != 4)
+                if (!mmio->is_write)
                         break;
                 blk_dev->state.device_feature_sel = *(uint32_t *)mmio->data;
                 fprintf(stderr, "[VIRTIO: feature(device): sel = %d]\n",
                         blk_dev->state.device_feature_sel);
                 break;
         case VIRTIO_MMIO_DEVICE_FEATURES:
-                if (mmio->is_write || len != 4)
+                if (mmio->is_write)
                         break;
                 if (blk_dev->state.device_feature_sel == 0) {
                         *(uint32_t *)mmio->data = 0;
                 } else if (blk_dev->state.device_feature_sel == 1) {
-                        *(uint32_t *)mmio->data =
-                            1 << (VIRTIO_F_VERSION_1 % 32);
+                        *(uint32_t *)mmio->data = 1
+                                                  << (VIRTIO_F_VERSION_1 % 32);
                 } else {
                         *(uint32_t *)mmio->data = 0;
                 }
                 break;
         case VIRTIO_MMIO_DRIVER_FEATURES_SEL:
-                if (!mmio->is_write || len != 4)
+                if (!mmio->is_write)
                         break;
                 blk_dev->state.driver_feature_sel = *(uint32_t *)mmio->data;
                 fprintf(stderr, "[VIRTIO: feature(driver): sel = %d]\n",
                         blk_dev->state.driver_feature_sel);
                 break;
         case VIRTIO_MMIO_DRIVER_FEATURES:
-                if (!mmio->is_write || len != 4)
+                if (!mmio->is_write)
                         break;
                 // Now for simplicity, don't torelate fallback.
-                // We strongly assume VIRTIO_BLK_F_RO and
-                // VIRTIO_F_VERSION_1 are accpeted by drivers
+                // We strongly assume VIRTIO_F_VERSION_1 are accpeted by drivers
                 if (blk_dev->state.driver_feature_sel == 0) {
-                        if (*(uint32_t *)mmio->data != 1 << VIRTIO_BLK_F_RO)
+                        if (*(uint32_t *)mmio->data != 0)
                                 fprintf(stderr, "[VIRTIO: blk: "
-                                                "VIRTIO_BLK_F_RO is "
-                                                "not accepted.]\n");
+                                                "unexpected driver features\n");
                 } else if (blk_dev->state.driver_feature_sel == 1) {
                         if (*(uint32_t *)mmio->data !=
                             1 << (VIRTIO_F_VERSION_1 % 32))
@@ -305,15 +325,13 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
                 }
                 break;
         case VIRTIO_MMIO_QUEUE_SEL:
-                if (!mmio->is_write || len != 4)
+                if (!mmio->is_write)
                         break;
                 blk_dev->state.queue_sel = *(uint32_t *)mmio->data;
                 fprintf(stderr, "[VIRTIO: blk: queue (%d) is selected]\n",
                         blk_dev->state.queue_sel);
                 break;
         case VIRTIO_MMIO_QUEUE_READY: // RW
-                if (len != 4)
-                    break;
                 // TODO: check sanity of QUEUE_SEL. always should be 0 in
                 // virtio-blk
                 if (mmio->is_write) {
@@ -321,13 +339,13 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
                         fprintf(stderr, "[VIRTIO: blk: queue(%d) %s]\n",
                                 blk_dev->state.queue_sel,
                                 blk_dev->queue.queue_ready == 1 ? "READY"
-                                                               : "NOT READY");
+                                                                : "NOT READY");
                 } else {
                         *(uint32_t *)mmio->data = blk_dev->queue.queue_ready;
                 }
                 break;
         case VIRTIO_MMIO_QUEUE_NUM_MAX:
-                if (mmio->is_write || len != 4)
+                if (mmio->is_write)
                         break;
                 if (blk_dev->state.queue_sel != 0) {
                         *(uint32_t *)mmio->data =
@@ -337,7 +355,7 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
                 *(uint32_t *)mmio->data = blk_dev->queue_size_max;
                 break;
         case VIRTIO_MMIO_QUEUE_NUM:
-                if (!mmio->is_write || len != 4)
+                if (!mmio->is_write)
                         break;
                 if (blk_dev->state.queue_sel != 0)
                         break; // the specified queue is not existent
@@ -348,87 +366,73 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
                 // TODO: check sanity of given queue_size
                 break;
         case VIRTIO_MMIO_QUEUE_DESC_HIGH:
-                if (!mmio->is_write || len != 4)
+                if (!mmio->is_write)
                         break;
                 blk_dev->queue.desc_guest_addr |=
                     (uint64_t)(*(uint32_t *)mmio->data) << 32;
                 break;
         case VIRTIO_MMIO_QUEUE_DESC_LOW:
-                if (!mmio->is_write || len != 4)
+                if (!mmio->is_write)
                         break;
                 blk_dev->queue.desc_guest_addr |=
                     (uint64_t)(*(uint32_t *)mmio->data);
                 break;
         case VIRTIO_MMIO_QUEUE_AVAIL_HIGH:
-                if (!mmio->is_write || len != 4)
+                if (!mmio->is_write)
                         break;
                 blk_dev->queue.avail_guest_addr |=
                     (uint64_t)(*(uint32_t *)mmio->data) << 32;
                 break;
         case VIRTIO_MMIO_QUEUE_AVAIL_LOW:
-                if (!mmio->is_write || len != 4)
+                if (!mmio->is_write)
                         break;
                 blk_dev->queue.avail_guest_addr |=
                     (uint64_t)(*(uint32_t *)mmio->data);
                 break;
         case VIRTIO_MMIO_QUEUE_USED_HIGH:
-                if (!mmio->is_write || len != 4)
+                if (!mmio->is_write)
                         break;
                 blk_dev->queue.used_guest_addr |=
                     (uint64_t)(*(uint32_t *)mmio->data) << 32;
                 break;
         case VIRTIO_MMIO_QUEUE_USED_LOW:
-                if (!mmio->is_write || len != 4)
+                if (!mmio->is_write)
                         break;
                 blk_dev->queue.used_guest_addr |=
                     (uint64_t)(*(uint32_t *)mmio->data);
                 break;
         case VIRTIO_MMIO_CONFIG_GENERATION:
-                if (mmio->is_write || len != 4)
+                if (mmio->is_write)
                         break;
-                *(uint32_t *)mmio->data = 0xbeef; // static value as of now
+                // static since we don't change MMIO configuration space
+                *(uint32_t *)mmio->data = 0;
                 break;
         case VIRTIO_MMIO_QUEUE_NOTIFY:
-                if (!mmio->is_write || len != 4)
+                if (!mmio->is_write)
                         break;
                 fprintf(stderr, "[VIRTIO: blk: QUEUE (%d) NOTIFIED]\n",
                         blk_dev->state.queue_sel);
                 do_virtio_blk_io(blk_dev);
                 break;
         case VIRTIO_MMIO_INTERRUPT_STATUS:
-                if (mmio->is_write || len != 4)
+                if (mmio->is_write)
                         break;
                 *(uint32_t *)mmio->data = blk_dev->state.interrupt_status;
                 break;
         case VIRTIO_MMIO_INTERRUPT_ACK:
-                if (!mmio->is_write || len != 4)
+                if (!mmio->is_write)
                         break;
-                blk_dev->state.interrupt_status &=
-                    ~(*(uint32_t *)mmio->data);
+                blk_dev->state.interrupt_status &= ~(*(uint32_t *)mmio->data);
                 struct kvm_irq_level irq = {
                     .irq = blk_dev->irq_number,
                     .level = 0, // deassert
                 };
-                err = ioctl(blk_dev->dev.vm_fd, KVM_IRQ_LINE, &irq);
+                int err = ioctl(blk_dev->dev.vm_fd, KVM_IRQ_LINE, &irq);
                 if (err)
                         fprintf(stderr, "[VIRTIO: BLK: KVM_IRQ_LINE "
                                         "(deasserting IRQ) failed]\n");
                 break;
-        case VIRTIO_MMIO_CONFIG ... VIRTIO_MMIO_CONFIG + sizeof(struct virtio_blk_config): // 0x1ff まで？
-                uint32_t config_offset = mmio_offset - 0x100;
-                if (mmio->is_write) {
-                        memcpy((void *)&blk_dev->config + config_offset,
-                               mmio->data, len);
-                } else {
-                        memcpy(mmio->data,
-                               (void *)&blk_dev->config + config_offset,
-                               len);
-                }
-                break;
         case VIRTIO_MMIO_STATUS:
-                if (len != 4)
-                        break;
-
                 if (!mmio->is_write) { /* READ */
                         *(uint32_t *)mmio->data = blk_dev->state.status;
                         dump_status(blk_dev->state.status);
@@ -440,10 +444,8 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
                 if (!new_status) {
                         fprintf(stderr, "[VIRTIO: status: "
                                         "reset requested]\n");
-                        memset(&blk_dev->state, 0,
-                               sizeof(blk_dev->state));
-                        memset(&blk_dev->queue, 0,
-                               sizeof(blk_dev->queue));
+                        memset(&blk_dev->state, 0, sizeof(blk_dev->state));
+                        memset(&blk_dev->queue, 0, sizeof(blk_dev->queue));
                         break;
                 }
 
@@ -454,7 +456,6 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
         default:
                 break;
         }
-        return;
 }
 
 int main(int argc, char *argv[]) {
