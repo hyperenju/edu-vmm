@@ -117,6 +117,8 @@ struct virtio_blk_req {
     uint64_t sector;
 };
 
+#define SECTOR_SIZE 512
+
 void process_io(struct virtio_blk_dev *blk_dev) {
     void *guest_mem = blk_dev->dev.mem;
     int disk_fd = blk_dev->disk_fd;
@@ -138,36 +140,47 @@ void process_io(struct virtio_blk_dev *blk_dev) {
         struct virtq_desc *data_desc = &desc_ring[desc->next];
         struct virtq_desc *status_desc = &desc_ring[data_desc->next];
 
-        if (req->type == VIRTIO_BLK_T_IN) {
-            // seek
-            err = lseek(disk_fd, req->sector * 512, SEEK_SET);
-            if (err == -1) {
-                fprintf(stderr, "[VIRTIO: BLK: seek err(%d)]\n", errno);
-            }
-        
-            // read
-            err = read(disk_fd, (void *)(guest_mem + data_desc->addr), data_desc->len);
-            if (err == -1) {
-                fprintf(stderr, "[VIRTIO: BLK: read err(%d)]\n", errno);
-            }
+        uint8_t status = VIRTIO_BLK_S_OK;
 
-            *(uint8_t *)(guest_mem + status_desc->addr) = VIRTIO_BLK_S_OK;
-        } else if (req->type == VIRTIO_BLK_T_OUT) {
-            // seek
-            err = lseek(disk_fd, req->sector * 512, SEEK_SET);
-            if (err == -1) {
-                fprintf(stderr, "[VIRTIO: BLK: seek err(%d)]\n", errno);
-            }
+        switch (req->type) {
+            case VIRTIO_BLK_T_IN:
+                err = lseek(disk_fd, req->sector * SECTOR_SIZE, SEEK_SET);
+                if (err == -1) {
+                    fprintf(stderr, "[VIRTIO: BLK: seek err(%d)]\n", errno);
+                    status = VIRTIO_BLK_S_IOERR;
+                    break;
+                }
 
-            // write
-            err = write(disk_fd, (void *)(guest_mem + data_desc->addr), data_desc->len);
-            if (err == -1) {
-                fprintf(stderr, "[VIRTIO: BLK: write err(%d)]\n", errno);
-            }
-            *(uint8_t *)(guest_mem + status_desc->addr) = VIRTIO_BLK_S_OK;
-        } else {
-            *(uint8_t *)(guest_mem + status_desc->addr) = VIRTIO_BLK_S_UNSUPP;
+                err = read(disk_fd, (void *)(guest_mem + data_desc->addr), data_desc->len);
+                if (err == -1) {
+                    fprintf(stderr, "[VIRTIO: BLK: read err(%d)]\n", errno);
+                    status = VIRTIO_BLK_S_IOERR;
+                    break;
+                }
+
+                break;
+            case VIRTIO_BLK_T_OUT:
+                err = lseek(disk_fd, req->sector * SECTOR_SIZE, SEEK_SET);
+                if (err == -1) {
+                    fprintf(stderr, "[VIRTIO: BLK: seek err(%d)]\n", errno);
+                    status = VIRTIO_BLK_S_IOERR;
+                    break;
+                }
+
+                err = write(disk_fd, (void *)(guest_mem + data_desc->addr), data_desc->len);
+                if (err == -1) {
+                    fprintf(stderr, "[VIRTIO: BLK: write err(%d)]\n", errno);
+                    status = VIRTIO_BLK_S_IOERR;
+                    break;
+                }
+
+                break;
+            default:
+                status = VIRTIO_BLK_S_UNSUPP;
+                break;
         }
+
+        *(uint8_t *)(guest_mem + status_desc->addr) = status;
         used->ring[used->idx % blk_dev->queue.queue_size].id = desc_idx;
         used->ring[used->idx % blk_dev->queue.queue_size].len = 1;
         used->idx++;
@@ -491,7 +504,7 @@ int main(int argc, char *argv[]) {
 
         struct stat st;
         fstat(blk_dev.disk_fd, &st);
-        blk_dev.config.capacity = (st.st_size - 1) / 512 + 1;
+        blk_dev.config.capacity = (st.st_size - 1) / SECTOR_SIZE + 1;
 
         int kernel_fd = open(argv[1], O_RDONLY);
         if (kernel_fd < 0) {
