@@ -132,20 +132,23 @@ void do_virtio_blk_io(struct virtio_blk_dev *blk_dev) {
 
     while (blk_dev->queue.last_avail_index != avail->idx) {
         uint16_t desc_idx = avail->ring[blk_dev->queue.last_avail_index % blk_dev->queue.queue_size];
-
         struct virtq_desc *desc = &desc_ring[desc_idx];
-        fprintf(stderr, "[VIRTIO: BLK: desc(%d): at 0x%lx with size = 0x%x, next = %d]\n", desc_idx, desc->addr, desc->len, desc->next);
-
         struct virtio_blk_req *req = guest_mem + desc->addr;
+        struct virtq_desc *data_desc;
+        struct virtq_desc *status_desc;
+
+        fprintf(stderr, "[VIRTIO: BLK: desc(%d): at 0x%lx with size = 0x%x, next = %d]\n", desc_idx, desc->addr, desc->len, desc->next);
         fprintf(stderr, "[VIRTIO: BLK: req: type = %d]\n", req->type);
 
-        struct virtq_desc *data_desc = &desc_ring[desc->next];
-        struct virtq_desc *status_desc = &desc_ring[data_desc->next];
 
         uint8_t status = VIRTIO_BLK_S_OK;
+        status_desc = &desc_ring[desc->next]; // default
 
         switch (req->type) {
             case VIRTIO_BLK_T_IN:
+                data_desc = &desc_ring[desc->next];
+                status_desc = &desc_ring[data_desc->next];
+
                 err = lseek(disk_fd, req->sector * SECTOR_SIZE, SEEK_SET);
                 if (err == -1) {
                     fprintf(stderr, "[VIRTIO: BLK: seek err(%d)]\n", errno);
@@ -162,6 +165,9 @@ void do_virtio_blk_io(struct virtio_blk_dev *blk_dev) {
 
                 break;
             case VIRTIO_BLK_T_OUT:
+                data_desc = &desc_ring[desc->next];
+                status_desc = &desc_ring[data_desc->next];
+
                 err = lseek(disk_fd, req->sector * SECTOR_SIZE, SEEK_SET);
                 if (err == -1) {
                     fprintf(stderr, "[VIRTIO: BLK: seek err(%d)]\n", errno);
@@ -172,6 +178,15 @@ void do_virtio_blk_io(struct virtio_blk_dev *blk_dev) {
                 err = write(disk_fd, (void *)(guest_mem + data_desc->addr), data_desc->len);
                 if (err == -1) {
                     fprintf(stderr, "[VIRTIO: BLK: write err(%d)]\n", errno);
+                    status = VIRTIO_BLK_S_IOERR;
+                    break;
+                }
+
+                break;
+            case VIRTIO_BLK_T_FLUSH:
+                err = fsync(disk_fd);
+                if (err) {
+                    fprintf(stderr, "[VIRTIO: BLK: FLUSH(fsync) err(%d)]\n", errno);
                     status = VIRTIO_BLK_S_IOERR;
                     break;
                 }
@@ -468,7 +483,7 @@ int virtio_blk_sw_init(struct virtio_blk_dev *blk_dev, char *rootfs, void *mem, 
 
         blk_dev->irq_number = IRQ_NUMBER;
         blk_dev->queue_size_max = QUEUE_SIZE_MAX;
-        blk_dev->device_features[0] = 0;
+        blk_dev->device_features[0] = 1 << (VIRTIO_BLK_F_FLUSH);
         blk_dev->device_features[1] = 1 << (VIRTIO_F_VERSION_1 % 32);
 
         blk_dev->dev.mem = mem;
