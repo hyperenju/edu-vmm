@@ -425,60 +425,29 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
         case VIRTIO_MMIO_STATUS:
                 if (mmio->len != 4)
                         break;
-                if (mmio->is_write) {
-                        // TODO: replace if/else with switch
-                        if (*(uint32_t *)mmio->data == 0) {
-                                fprintf(stderr, "[VIRTIO: status: "
-                                                "reset requested]\n");
-                                memset(&blk_dev->state, 0,
-                                       sizeof(blk_dev->state));
-                                memset(&blk_dev->queue, 0,
-                                       sizeof(blk_dev->queue));
-                                break;
-                        }
 
-                        if (*(uint32_t *)mmio->data &
-                            VIRTIO_CONFIG_S_ACKNOWLEDGE) {
-                                fprintf(stderr, "[VIRTIO: status: "
-                                                "acknowledge (guest "
-                                                "driver has discovered "
-                                                "the device)]\n");
-                                blk_dev->state.status |=
-                                    VIRTIO_CONFIG_S_ACKNOWLEDGE;
-                        }
-
-                        if (*(uint32_t *)mmio->data &
-                            VIRTIO_CONFIG_S_DRIVER) {
-                                fprintf(stderr, "[VIRTIO: status: driver "
-                                                "(guest has the "
-                                                "approprivate driver)]\n");
-                                blk_dev->state.status |= VIRTIO_CONFIG_S_DRIVER;
-                        }
-
-                        if (*(uint32_t *)mmio->data &
-                            VIRTIO_CONFIG_S_DRIVER_OK) {
-                                fprintf(stderr,
-                                        "[VIRTIO: status: driver okay\n");
-                                blk_dev->state.status |=
-                                    VIRTIO_CONFIG_S_DRIVER_OK;
-                        }
-
-                        if (*(uint32_t *)mmio->data &
-                            VIRTIO_CONFIG_S_FEATURES_OK) {
-                                fprintf(stderr, "[VIRTIO: status: "
-                                                "features are okay]\n");
-                                blk_dev->state.status |=
-                                    VIRTIO_CONFIG_S_FEATURES_OK;
-                        }
-
-                        break;
-                } else {
+                if (!mmio->is_write) { /* READ */
                         *(uint32_t *)mmio->data = blk_dev->state.status;
-                        fprintf(stderr, "[VIRTIO: status: read: 0x%x]\n",
-                                blk_dev->state.status);
+                        dump_status(blk_dev->state.status);
                         break;
                 }
+
+                /* Write */
+                uint32_t new_status = *(uint32_t *)mmio->data;
+                if (!new_status) {
+                        fprintf(stderr, "[VIRTIO: status: "
+                                        "reset requested]\n");
+                        memset(&blk_dev->state, 0,
+                               sizeof(blk_dev->state));
+                        memset(&blk_dev->queue, 0,
+                               sizeof(blk_dev->queue));
+                        break;
+                }
+
+                blk_dev->state.status = new_status;
+                dump_status(new_status);
                 break;
+
         default:
                 break;
         }
