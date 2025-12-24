@@ -83,7 +83,7 @@ struct virtio_blk_dev {
         /* static fields */
         uint32_t device_features[2];
         uint32_t irq_number; 
-        int eventfd;
+        int irqfd;
         uint32_t queue_size_max; 
         int disk_fd;
         struct virtio_blk_config config;
@@ -128,7 +128,7 @@ static void virtio_raise_irq(struct virtio_blk_dev *blk_dev, uint32_t int_cause)
 
     blk_dev->state.interrupt_status |= int_cause;
 
-    size = write(blk_dev->eventfd, &(uint64_t){1}, sizeof(uint64_t));
+    size = write(blk_dev->irqfd, &(uint64_t){1}, sizeof(uint64_t));
     if (size != sizeof(uint64_t)) {
         fprintf(stderr, "[VIRTIO: BLK: write(2) to eventfd failed. ret = %d, expected = %d\n]", size, (int)sizeof(uint64_t));
     }
@@ -522,8 +522,8 @@ int virtio_blk_sw_init(struct virtio_blk_dev *blk_dev, char *rootfs, void *mem, 
                 return 1;
         }
 
-        blk_dev->eventfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-        if (blk_dev->eventfd < 0) {
+        blk_dev->irqfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+        if (blk_dev->irqfd < 0) {
             perror("eventfd");
             return 1;
         }
@@ -642,7 +642,7 @@ int main(int argc, char *argv[]) {
 
         struct kvm_irqfd irqfd = {0};
         irqfd.gsi = blk_dev.irq_number;
-        irqfd.fd = blk_dev.eventfd;
+        irqfd.fd = blk_dev.irqfd;
         if (ioctl(vm_fd, KVM_IRQFD, &irqfd) < 0) {
                 perror("KVM_IRQFD");
                 return 1;
