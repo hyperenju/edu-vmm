@@ -145,6 +145,7 @@ void do_virtio_blk_io(struct virtio_blk_dev *blk_dev) {
     struct virtq_desc *desc_ring = guest_mem + blk_dev->queue.desc_guest_addr;
     struct virtq_avail *avail = guest_mem + blk_dev->queue.avail_guest_addr;
     struct virtq_used *used = guest_mem + blk_dev->queue.used_guest_addr;
+    ssize_t bytes;
     int err;
 
     while (blk_dev->queue.last_avail_index != avail->idx) {
@@ -167,36 +168,22 @@ void do_virtio_blk_io(struct virtio_blk_dev *blk_dev) {
                 data_desc = &desc_ring[desc->next];
                 status_desc = &desc_ring[data_desc->next];
 
-                err = lseek(disk_fd, req->sector * SECTOR_SIZE, SEEK_SET);
-                if (err == -1) {
-                    fprintf(stderr, "[VIRTIO: BLK: seek err(%d)]\n", errno);
+                bytes = pread(disk_fd, (void *)(guest_mem + data_desc->addr), data_desc->len, req->sector * SECTOR_SIZE);
+                if (bytes == -1) {
+                    fprintf(stderr, "[VIRTIO: BLK: pread err(%d)]\n", errno);
                     status = VIRTIO_BLK_S_IOERR;
                     break;
                 }
 
-                err = read(disk_fd, (void *)(guest_mem + data_desc->addr), data_desc->len);
-                if (err == -1) {
-                    fprintf(stderr, "[VIRTIO: BLK: read err(%d)]\n", errno);
-                    status = VIRTIO_BLK_S_IOERR;
-                    break;
-                }
-
-                len = err + 1; /* err: read_bytes */
+                len = bytes + 1;
                 break;
             case VIRTIO_BLK_T_OUT:
                 data_desc = &desc_ring[desc->next];
                 status_desc = &desc_ring[data_desc->next];
 
-                err = lseek(disk_fd, req->sector * SECTOR_SIZE, SEEK_SET);
-                if (err == -1) {
-                    fprintf(stderr, "[VIRTIO: BLK: seek err(%d)]\n", errno);
-                    status = VIRTIO_BLK_S_IOERR;
-                    break;
-                }
-
-                err = write(disk_fd, (void *)(guest_mem + data_desc->addr), data_desc->len);
-                if (err == -1) {
-                    fprintf(stderr, "[VIRTIO: BLK: write err(%d)]\n", errno);
+                bytes = pwrite(disk_fd, (void *)(guest_mem + data_desc->addr), data_desc->len, req->sector * SECTOR_SIZE);
+                if (bytes == -1) {
+                    fprintf(stderr, "[VIRTIO: BLK: pwrite err(%d)]\n", errno);
                     status = VIRTIO_BLK_S_IOERR;
                     break;
                 }
