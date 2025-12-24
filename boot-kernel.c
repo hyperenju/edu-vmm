@@ -474,6 +474,7 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
                 break;
 
         default:
+                fprintf(stderr, "[VIRTIO: BLK: unhandled offset: %d]\n", mmio_offset);
                 break;
         }
 }
@@ -513,7 +514,7 @@ int main(int argc, char *argv[]) {
             "i8042.noaux i8042.nomux i8042.dumbkbd "
             /* Allow guest kernel to locate the virtio device via MMIO transport */
             "virtio_mmio.device=0x%lx@0x%lx:%d "
-            /* Needless */
+            /* disable needless features */
             "audit=0 selinux=0 nokaslr ";
 
         if (argc < 2) {
@@ -801,32 +802,37 @@ int main(int argc, char *argv[]) {
                                 }
                         } else {
                                 // // 未処理のIOをログ
-                                // fprintf(stderr, "[IO %s port=0x%x
+                                // fprintf(stderr, "[unhandled IO %s port=0x%x
                                 // size=%d]\n",
                                 //         run->io.direction ? "OUT" : "IN",
                                 //         run->io.port, run->io.size);
                         }
                         break;
                 case KVM_EXIT_MMIO:
-                        if (run->mmio.is_write)
-                            fprintf(stderr,
-                                    "[MMIO %s at 0x%x with size = %d, data=(0x%x, "
-                                    "0x%x, 0x%x, 0x%x)]\n",
-                                    run->mmio.is_write ? "write" : "read",
-                                    (uint32_t)run->mmio.phys_addr, run->mmio.len,
-                                    run->mmio.data[0], run->mmio.data[1],
-                                    run->mmio.data[2], run->mmio.data[3]);
-                        if (!run->mmio.is_write)
-                            fprintf(stderr,
-                                    "[MMIO %s at 0x%x with size = %d]\n",
-                                    run->mmio.is_write ? "write" : "read",
-                                    (uint32_t)run->mmio.phys_addr, run->mmio.len);
-
                         if ((uint32_t)run->mmio.phys_addr >=
                                 VIRTIO_BLK_MMIO_BASE &&
                             (uint32_t)run->mmio.phys_addr <
-                                VIRTIO_BLK_MMIO_BASE + VIRTIO_BLK_MMIO_SIZE)
+                                VIRTIO_BLK_MMIO_BASE + VIRTIO_BLK_MMIO_SIZE) {
                                 do_virtio_blk(&run->mmio, &blk_dev);
+                                break;
+                        }
+
+                        if (run->mmio.is_write)
+                                fprintf(stderr,
+                                        "[unhandled MMIO %s at 0x%x with size = %d, "
+                                        "data=(0x%x, "
+                                        "0x%x, 0x%x, 0x%x)]\n",
+                                        run->mmio.is_write ? "write" : "read",
+                                        (uint32_t)run->mmio.phys_addr,
+                                        run->mmio.len, run->mmio.data[0],
+                                        run->mmio.data[1], run->mmio.data[2],
+                                        run->mmio.data[3]);
+                        if (!run->mmio.is_write)
+                                fprintf(stderr,
+                                        "[unhandled MMIO %s at 0x%x with size = %d]\n",
+                                        run->mmio.is_write ? "write" : "read",
+                                        (uint32_t)run->mmio.phys_addr,
+                                        run->mmio.len);
                         break;
 
                 case KVM_EXIT_SHUTDOWN:
