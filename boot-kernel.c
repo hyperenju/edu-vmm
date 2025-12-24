@@ -254,6 +254,22 @@ static void dump_status(uint32_t status) {
 #define VIRTIO_MMIO_MAGIC "virt"
 #define VIRTIO_MMIO_VERSION_MODERN 2
 
+static void virtio_mmio_needs_reset(struct virtio_blk_dev *blk_dev) {
+        fprintf(stderr, "[VIRTIO: BLK: needs reset. requesting driver to reset "
+                        "it's state\n");
+        blk_dev->state.status = VIRTIO_CONFIG_S_NEEDS_RESET;
+        blk_dev->state.interrupt_status = VIRTIO_MMIO_INT_CONFIG;
+
+        struct kvm_irq_level irq = {
+            .irq = blk_dev->irq_number,
+            .level = 1,
+        };
+        int err = ioctl(blk_dev->dev.vm_fd, KVM_IRQ_LINE, &irq);
+        if (err)
+                fprintf(stderr, "[VIRTIO: BLK: KVM_IRQ_LINE "
+                                "(deasserting IRQ) failed]\n");
+}
+
 static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virtio_blk_dev *blk_dev) {
         uint32_t mmio_offset = (uint32_t)mmio->phys_addr - VIRTIO_BLK_MMIO_BASE;
         uint32_t sel;
@@ -387,17 +403,7 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
                             "than max size (%d)]\n",
                             negotiated_queue_size, blk_dev->queue_size_max);
 
-                    blk_dev->state.status = VIRTIO_CONFIG_S_NEEDS_RESET;
-                    blk_dev->state.interrupt_status = VIRTIO_MMIO_INT_CONFIG;
-
-                    struct kvm_irq_level irq = {
-                        .irq = blk_dev->irq_number,
-                        .level = 1,
-                    };
-                    int err = ioctl(blk_dev->dev.vm_fd, KVM_IRQ_LINE, &irq);
-                    if (err)
-                            fprintf(stderr, "[VIRTIO: BLK: KVM_IRQ_LINE "
-                                            "(deasserting IRQ) failed]\n");
+                    virtio_mmio_needs_reset(blk_dev);
                     break;
                 }
 
