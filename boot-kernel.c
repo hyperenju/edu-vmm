@@ -359,6 +359,14 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
                                 sel, blk_dev->device_features[sel],
                                 blk_dev->state.negotiated_features[sel]);
                 }
+
+                if (sel == 1 && !(blk_dev->state.negotiated_features[1] &
+                                  (1 << VIRTIO_F_VERSION_1 % 32))) {
+                        fprintf(stderr, "[VIRTIO: BLK: driver didn't accept "
+                                        "VIRTIO_F_VERSION_1. abort\n");
+                        virtio_mmio_needs_reset(blk_dev);
+                }
+
                 break;
         case VIRTIO_MMIO_QUEUE_SEL:
                 if (!mmio->is_write)
