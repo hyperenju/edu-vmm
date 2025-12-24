@@ -463,15 +463,33 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
         }
 }
 
+int virtio_blk_sw_init(struct virtio_blk_dev *blk_dev, char *rootfs, void *mem, int vm_fd) {
+        struct stat st;
+
+        blk_dev->irq_number = IRQ_NUMBER;
+        blk_dev->queue_size_max = QUEUE_SIZE_MAX;
+        blk_dev->device_features[0] = 0;
+        blk_dev->device_features[1] = 1 << (VIRTIO_F_VERSION_1 % 32);
+
+        blk_dev->dev.mem = mem;
+        blk_dev->dev.vm_fd = vm_fd;
+
+        blk_dev->disk_fd = open(rootfs, O_RDWR);
+        if (blk_dev->disk_fd < 0) {
+                perror("open rootfs");
+                return 1;
+        }
+
+        fstat(blk_dev->disk_fd, &st);
+        blk_dev->config.capacity = (st.st_size - 1) / SECTOR_SIZE + 1;
+
+        return 0;
+};
+
 int main(int argc, char *argv[]) {
         struct virtio_blk_dev blk_dev = {0};
         int err;
 
-        // sw init about blk_dev
-        blk_dev.irq_number = IRQ_NUMBER;
-        blk_dev.queue_size_max = QUEUE_SIZE_MAX;
-        blk_dev.device_features[0] = 0;
-        blk_dev.device_features[1] = 1 << (VIRTIO_F_VERSION_1 % 32);
 
         char cmdline[MAX_CMDLINE_LEN];
         const char *cmdline_fmt =
@@ -497,22 +515,13 @@ int main(int argc, char *argv[]) {
         if (argc == 3)
             rootfs = argv[2];
 
-        blk_dev.disk_fd = open(rootfs, O_RDWR);
-        if (blk_dev.disk_fd < 0) {
-                perror("open rootfs");
-                return 1;
-        }
-
-        struct stat st;
-        fstat(blk_dev.disk_fd, &st);
-        blk_dev.config.capacity = (st.st_size - 1) / SECTOR_SIZE + 1;
-
         int kernel_fd = open(argv[1], O_RDONLY);
         if (kernel_fd < 0) {
                 perror("open kernel");
                 return 1;
         }
 
+        struct stat st;
         fstat(kernel_fd, &st);
 
         void *kernel_data =
@@ -577,8 +586,11 @@ int main(int argc, char *argv[]) {
                 return 1;
         }
 
-        blk_dev.dev.mem = mem;
-        blk_dev.dev.vm_fd = vm_fd;
+        err = virtio_blk_sw_init(&blk_dev, rootfs, mem, vm_fd);
+        if (err) {
+                perror("virtio_blk_sw_init");
+                return 1;
+        }
 
         struct kvm_userspace_memory_region region = {
             .slot = 0,
