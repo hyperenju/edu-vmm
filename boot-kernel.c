@@ -148,6 +148,7 @@ void do_virtio_blk_io(struct virtio_blk_dev *blk_dev) {
     int err;
 
     while (blk_dev->queue.last_avail_index != avail->idx) {
+        uint32_t len = 1;
         uint16_t desc_idx = avail->ring[blk_dev->queue.last_avail_index % blk_dev->queue.queue_size];
         struct virtq_desc *desc = &desc_ring[desc_idx];
         struct virtio_blk_req *req = guest_mem + desc->addr;
@@ -180,6 +181,7 @@ void do_virtio_blk_io(struct virtio_blk_dev *blk_dev) {
                     break;
                 }
 
+                len = err + 1; /* err: read_bytes */
                 break;
             case VIRTIO_BLK_T_OUT:
                 data_desc = &desc_ring[desc->next];
@@ -216,7 +218,7 @@ void do_virtio_blk_io(struct virtio_blk_dev *blk_dev) {
 
         *(uint8_t *)(guest_mem + status_desc->addr) = status;
         used->ring[used->idx % blk_dev->queue.queue_size].id = desc_idx;
-        used->ring[used->idx % blk_dev->queue.queue_size].len = 1;
+        used->ring[used->idx % blk_dev->queue.queue_size].len = len;
         used->idx++;
 
         blk_dev->queue.last_avail_index++;
