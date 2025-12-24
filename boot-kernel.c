@@ -14,6 +14,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <errno.h>
 
 #define E820_TYPE_RAM 1
 #define E820_TYPE_RESERVED 2
@@ -138,13 +139,13 @@ void process_io(void *guest_mem, struct virtio_blk_dev *blk_dev, int disk_fd, in
             // seek
             err = lseek(disk_fd, req->sector * 512, SEEK_SET);
             if (err == -1) {
-                fprintf(stderr, "[VIRTIO: BLK: seek err]\n");
+                fprintf(stderr, "[VIRTIO: BLK: seek err(%d)]\n", errno);
             }
         
             // read
             err = read(disk_fd, (void *)(guest_mem + data_desc->addr), data_desc->len);
             if (err == -1) {
-                fprintf(stderr, "[VIRTIO: BLK: read err]\n");
+                fprintf(stderr, "[VIRTIO: BLK: read err(%d)]\n", errno);
             }
 
             *(uint8_t *)(guest_mem + status_desc->addr) = VIRTIO_BLK_S_OK;
@@ -152,13 +153,13 @@ void process_io(void *guest_mem, struct virtio_blk_dev *blk_dev, int disk_fd, in
             // seek
             err = lseek(disk_fd, req->sector * 512, SEEK_SET);
             if (err == -1) {
-                fprintf(stderr, "[VIRTIO: BLK: seek err(%d)]\n", err);
+                fprintf(stderr, "[VIRTIO: BLK: seek err(%d)]\n", errno);
             }
 
             // write
             err = write(disk_fd, (void *)(guest_mem + data_desc->addr), data_desc->len);
             if (err == -1) {
-                fprintf(stderr, "[VIRTIO: BLK: write err(%d)]\n", err);
+                fprintf(stderr, "[VIRTIO: BLK: write err(%d)]\n", errno);
             }
             *(uint8_t *)(guest_mem + status_desc->addr) = VIRTIO_BLK_S_OK;
         } else {
