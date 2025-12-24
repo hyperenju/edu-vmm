@@ -509,6 +509,7 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
 
 void *io_thread(void *arg) {
         struct virtio_blk_dev *blk_dev = arg;
+        int ioeventfd = blk_dev->ioeventfd;
 
         int epfd = epoll_create1(0);
         if (epfd == -1) {
@@ -518,8 +519,8 @@ void *io_thread(void *arg) {
 
         struct epoll_event ev;
         ev.events = EPOLLIN;
-        ev.data.fd = blk_dev->ioeventfd;
-        if (epoll_ctl(epfd, EPOLL_CTL_ADD, blk_dev->ioeventfd, &ev) < 0) {
+        ev.data.fd = ioeventfd;
+        if (epoll_ctl(epfd, EPOLL_CTL_ADD, ioeventfd, &ev) < 0) {
                 perror("epoll_create1");
                 exit(1);
         }
@@ -532,9 +533,9 @@ void *io_thread(void *arg) {
                         exit(1);
                 }
                 for (int i = 0; i < n; i++) {
-                        if (events[i].data.fd == blk_dev->ioeventfd) {
+                        if (events[i].data.fd == ioeventfd) {
                                 uint64_t val;
-                                read(blk_dev->ioeventfd, &val, sizeof(val));
+                                read(ioeventfd, &val, sizeof(val));
                                 do_virtio_blk_io(blk_dev);
                         }
                 }
