@@ -117,7 +117,10 @@ struct virtio_blk_req {
     uint64_t sector;
 };
 
-void process_io(void *guest_mem, struct virtio_blk_dev *blk_dev, int disk_fd, int vm_fd) {
+void process_io(struct virtio_blk_dev *blk_dev) {
+    void *guest_mem = blk_dev->dev.mem;
+    int disk_fd = blk_dev->disk_fd;
+    int vm_fd = blk_dev->dev.vm_fd;
     struct virtq_desc *desc_ring = guest_mem + blk_dev->queue.desc_guest_addr;
     struct virtq_avail *avail = guest_mem + blk_dev->queue.avail_guest_addr;
     struct virtq_used *used = guest_mem + blk_dev->queue.used_guest_addr;
@@ -354,7 +357,7 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
                         break;
                 fprintf(stderr, "[VIRTIO: blk: QUEUE (%d) NOTIFIED]\n",
                         blk_dev->state.queue_sel);
-                process_io(blk_dev->dev.mem, blk_dev, blk_dev->disk_fd, blk_dev->dev.vm_fd);
+                process_io(blk_dev);
                 break;
         case VIRTIO_MMIO_INTERRUPT_STATUS:
                 if (mmio->is_write)
