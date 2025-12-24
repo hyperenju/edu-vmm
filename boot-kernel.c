@@ -149,24 +149,52 @@ void do_virtio_blk_io(struct virtio_blk_dev *blk_dev) {
     int err;
 
     while (blk_dev->queue.last_avail_index != avail->idx) {
-        uint32_t len = 1;
         uint16_t desc_idx = avail->ring[blk_dev->queue.last_avail_index % blk_dev->queue.queue_size];
-        struct virtq_desc *desc = &desc_ring[desc_idx];
-        struct virtio_blk_req *req = guest_mem + desc->addr;
-        struct virtq_desc *data_desc;
+        uint8_t status = VIRTIO_BLK_S_OK;
         struct virtq_desc *status_desc;
+        struct virtq_desc *data_desc;
+        struct virtio_blk_req *req;
+        struct virtq_desc *desc;
+        uint32_t len = 1;
+
+        blk_dev->queue.last_avail_index++;
+
+        if (desc_idx >= blk_dev->queue.queue_size) {
+                fprintf(stderr,
+                        "[VIRTIO: BLK: invalid desc_idx(%d) >= queue size(%d). "
+                        "Broken guest driver?]\n",
+                        desc_idx, blk_dev->queue.queue_size);
+                continue;
+        }
+
+        desc = &desc_ring[desc_idx];
+        req = guest_mem + desc->addr;
+
+
+        if (desc->next >= blk_dev->queue.queue_size) {
+                fprintf(stderr,
+                        "[VIRTIO: BLK: invalid desc->next(%d) >= queue size(%d). "
+                        "Broken guest driver?]\n",
+                        desc->next, blk_dev->queue.queue_size);
+                continue;
+        }
+
+        status_desc = &desc_ring[desc->next]; // default
 
         fprintf(stderr, "[VIRTIO: BLK: desc(%d): at 0x%lx with size = 0x%x, next = %d]\n", desc_idx, desc->addr, desc->len, desc->next);
         fprintf(stderr, "[VIRTIO: BLK: req: type = %d]\n", req->type);
 
-
-        uint8_t status = VIRTIO_BLK_S_OK;
-        status_desc = &desc_ring[desc->next]; // default
-
         switch (req->type) {
             case VIRTIO_BLK_T_IN:
-                data_desc = &desc_ring[desc->next];
-                status_desc = &desc_ring[data_desc->next];
+                data_desc = status_desc;
+
+                if (data_desc->next >= blk_dev->queue.queue_size) {
+                        fprintf(stderr,
+                                "[VIRTIO: BLK: invalid data_desc->next(%d) >= queue size(%d). "
+                                "Broken guest driver?]\n",
+                                data_desc->next, blk_dev->queue.queue_size);
+                        continue;
+                }
 
                 bytes = pread(disk_fd, (void *)(guest_mem + data_desc->addr), data_desc->len, req->sector * SECTOR_SIZE);
                 if (bytes == -1) {
@@ -175,11 +203,19 @@ void do_virtio_blk_io(struct virtio_blk_dev *blk_dev) {
                     break;
                 }
 
+                status_desc = &desc_ring[data_desc->next];
                 len = bytes + 1;
                 break;
             case VIRTIO_BLK_T_OUT:
-                data_desc = &desc_ring[desc->next];
-                status_desc = &desc_ring[data_desc->next];
+                data_desc = status_desc;
+
+                if (data_desc->next >= blk_dev->queue.queue_size) {
+                        fprintf(stderr,
+                                "[VIRTIO: BLK: invalid data_desc->next(%d) >= queue size(%d). "
+                                "Broken guest driver?]\n",
+                                data_desc->next, blk_dev->queue.queue_size);
+                        continue;
+                }
 
                 bytes = pwrite(disk_fd, (void *)(guest_mem + data_desc->addr), data_desc->len, req->sector * SECTOR_SIZE);
                 if (bytes == -1) {
@@ -187,6 +223,8 @@ void do_virtio_blk_io(struct virtio_blk_dev *blk_dev) {
                     status = VIRTIO_BLK_S_IOERR;
                     break;
                 }
+
+                status_desc = &desc_ring[data_desc->next];
 
                 break;
             case VIRTIO_BLK_T_FLUSH:
@@ -207,8 +245,6 @@ void do_virtio_blk_io(struct virtio_blk_dev *blk_dev) {
         used->ring[used->idx % blk_dev->queue.queue_size].id = desc_idx;
         used->ring[used->idx % blk_dev->queue.queue_size].len = len;
         used->idx++;
-
-        blk_dev->queue.last_avail_index++;
     }
 
     virtio_raise_irq(blk_dev, VIRTIO_MMIO_INT_VRING);
