@@ -696,8 +696,8 @@ int main(int argc, char *argv[]) {
                 return 1;
         }
 
-        pthread_t tid;
-        err = pthread_create(&tid, NULL, io_thread, &blk_dev);
+        pthread_t io_thread_tid;
+        err = pthread_create(&io_thread_tid, NULL, io_thread, &blk_dev);
         if (err) {
             perror("pthread_create");
             return 1;
@@ -956,4 +956,7 @@ int main(int argc, char *argv[]) {
                         break; // 他のIOは無視
                 }
         }
+
+    pthread_cancel(io_thread_tid);
+    pthread_join(io_thread_tid, NULL);
 }
