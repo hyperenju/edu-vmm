@@ -411,7 +411,7 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
                         fprintf(stderr, "[VIRTIO: BLK: KVM_IRQ_LINE "
                                         "(deasserting IRQ) failed]\n");
                 break;
-        case VIRTIO_MMIO_CONFIG ... 0x1ff: // 0x1ff まで？
+        case VIRTIO_MMIO_CONFIG ... VIRTIO_MMIO_CONFIG + sizeof(struct virtio_blk_config): // 0x1ff まで？
                 uint32_t config_offset = mmio_offset - 0x100;
                 if (mmio->is_write) {
                         memcpy((void *)&blk_dev->config + config_offset,
