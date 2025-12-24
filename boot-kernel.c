@@ -379,11 +379,32 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
                         break;
                 if (blk_dev->state.queue_sel != 0)
                         break; // the specified queue is not existent
-                blk_dev->queue.queue_size = *(uint32_t *)mmio->data;
+
+                uint32_t negotiated_queue_size = *(uint32_t *)mmio->data;
+                if (negotiated_queue_size > blk_dev->queue_size_max) {
+                    fprintf(stderr,
+                            "[VIRTIO: BLK: invalid queue size (%d). larger "
+                            "than max size (%d)]\n",
+                            negotiated_queue_size, blk_dev->queue_size_max);
+
+                    blk_dev->state.status = VIRTIO_CONFIG_S_NEEDS_RESET;
+                    blk_dev->state.interrupt_status = VIRTIO_MMIO_INT_CONFIG;
+
+                    struct kvm_irq_level irq = {
+                        .irq = blk_dev->irq_number,
+                        .level = 1,
+                    };
+                    int err = ioctl(blk_dev->dev.vm_fd, KVM_IRQ_LINE, &irq);
+                    if (err)
+                            fprintf(stderr, "[VIRTIO: BLK: KVM_IRQ_LINE "
+                                            "(deasserting IRQ) failed]\n");
+                    break;
+                }
+
+                blk_dev->queue.queue_size = negotiated_queue_size;
                 fprintf(stderr,
                         "[VIRTIO: blk: queue size (%d) is negotiated]\n",
                         blk_dev->queue.queue_size);
-                // TODO: check sanity of given queue_size
                 break;
         case VIRTIO_MMIO_QUEUE_DESC_HIGH:
                 if (!mmio->is_write)
