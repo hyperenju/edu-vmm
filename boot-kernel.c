@@ -525,9 +525,9 @@ void *io_thread(void *arg) {
                 exit(1);
         }
 
-        struct epoll_event events[10];
+        struct epoll_event events[1];
         for (;;) {
-                int n = epoll_wait(epfd, events, 10, -1);
+                int n = epoll_wait(epfd, events, 1, -1);
                 if (n < 0) {
                         perror("epoll_wait");
                         exit(1);
