@@ -18,6 +18,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <errno.h>
+#include <stdatomic.h>
 
 #define E820_TYPE_RAM 1
 #define E820_TYPE_RESERVED 2
@@ -68,7 +69,7 @@ struct virtio_blk_state {
         uint32_t device_feature_sel;
         uint32_t driver_feature_sel;
         uint32_t queue_sel;
-        uint32_t interrupt_status;
+        atomic_uint_fast32_t interrupt_status;
         uint32_t negotiated_features[2];
 };
 
@@ -129,7 +130,7 @@ struct virtio_blk_req {
 static void virtio_raise_irq(struct virtio_blk_dev *blk_dev, uint32_t int_cause) {
     int size;
 
-    blk_dev->state.interrupt_status |= int_cause;
+    atomic_fetch_or(&blk_dev->state.interrupt_status, int_cause);
 
     size = write(blk_dev->irqfd, &(uint64_t){1}, sizeof(uint64_t));
     if (size != sizeof(uint64_t)) {
@@ -470,14 +471,14 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
         case VIRTIO_MMIO_INTERRUPT_STATUS:
                 if (mmio->is_write)
                         break;
-                *(uint32_t *)mmio->data = blk_dev->state.interrupt_status;
+                *(uint32_t *)mmio->data = atomic_load(&blk_dev->state.interrupt_status);
                 break;
         case VIRTIO_MMIO_INTERRUPT_ACK:
                 if (!mmio->is_write)
                         break;
                 fprintf(stderr, "[VIRTIO: blk: INT ACKED(%d)]\n",
                         *(uint32_t *)mmio->data);
-                blk_dev->state.interrupt_status &= ~(*(uint32_t *)mmio->data);
+                atomic_fetch_and(&blk_dev->state.interrupt_status, ~(*(uint32_t *)mmio->data));
                 break;
         case VIRTIO_MMIO_STATUS:
                 if (!mmio->is_write) { /* READ */
