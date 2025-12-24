@@ -119,7 +119,7 @@ struct virtio_blk_req {
 
 #define SECTOR_SIZE 512
 
-void process_io(struct virtio_blk_dev *blk_dev) {
+void do_virtio_blk_io(struct virtio_blk_dev *blk_dev) {
     void *guest_mem = blk_dev->dev.mem;
     int disk_fd = blk_dev->disk_fd;
     int vm_fd = blk_dev->dev.vm_fd;
@@ -370,7 +370,7 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
                         break;
                 fprintf(stderr, "[VIRTIO: blk: QUEUE (%d) NOTIFIED]\n",
                         blk_dev->state.queue_sel);
-                process_io(blk_dev);
+                do_virtio_blk_io(blk_dev);
                 break;
         case VIRTIO_MMIO_INTERRUPT_STATUS:
                 if (mmio->is_write)
