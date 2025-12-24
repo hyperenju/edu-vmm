@@ -149,7 +149,18 @@ void process_io(void *guest_mem, struct virtio_blk_dev *blk_dev, int disk_fd, in
 
             *(uint8_t *)(guest_mem + status_desc->addr) = VIRTIO_BLK_S_OK;
         } else if (req->type == VIRTIO_BLK_T_OUT) {
-            *(uint8_t *)(guest_mem + status_desc->addr) = VIRTIO_BLK_S_IOERR;
+            // seek
+            err = lseek(disk_fd, req->sector * 512, SEEK_SET);
+            if (err == -1) {
+                fprintf(stderr, "[VIRTIO: BLK: seek err(%d)]\n", err);
+            }
+
+            // write
+            err = write(disk_fd, (void *)(guest_mem + data_desc->addr), data_desc->len);
+            if (err == -1) {
+                fprintf(stderr, "[VIRTIO: BLK: write err(%d)]\n", err);
+            }
+            *(uint8_t *)(guest_mem + status_desc->addr) = VIRTIO_BLK_S_OK;
         } else {
             *(uint8_t *)(guest_mem + status_desc->addr) = VIRTIO_BLK_S_UNSUPP;
         }
@@ -221,7 +232,7 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
                 if (mmio->is_write)
                         break;
                 if (blk_dev->state.device_feature_sel == 0) {
-                        *(uint32_t *)mmio->data = 1 << VIRTIO_BLK_F_RO;
+                        *(uint32_t *)mmio->data = 0;
                 } else if (blk_dev->state.device_feature_sel == 1) {
                         *(uint32_t *)mmio->data =
                             1 << (VIRTIO_F_VERSION_1 % 32);
@@ -452,9 +463,7 @@ int main(int argc, char *argv[]) {
             /* Allow guest kernel to locate the virtio device via MMIO transport */
             "virtio_mmio.device=0x%lx@0x%lx:%d "
             /* Needless */
-            "audit=0 selinux=0 nokaslr "
-            /* First we only implemente RO virtio-blk, so don't allow the guest kernel to write to rootfs */
-            "ro";
+            "audit=0 selinux=0 nokaslr ";
 
         if (argc < 2) {
                 fprintf(stderr, "Usage: %s <bzImage> <rootfs(optional)>\n", argv[0]);
@@ -470,7 +479,7 @@ int main(int argc, char *argv[]) {
         if (argc == 3)
             rootfs = argv[2];
 
-        blk_dev.disk_fd = open(rootfs, O_RDONLY);
+        blk_dev.disk_fd = open(rootfs, O_RDWR);
         if (blk_dev.disk_fd < 0) {
                 perror("open rootfs");
                 return 1;
