@@ -213,6 +213,26 @@ void do_virtio_blk_io(struct virtio_blk_dev *blk_dev) {
 // virtio-blk specific
 #define QUEUE_SIZE_MAX 1024
 
+static const struct {
+        uint32_t bit;
+        const char *name;
+} status_bits[] = {
+    {VIRTIO_CONFIG_S_ACKNOWLEDGE, "acknowledge"},
+    {VIRTIO_CONFIG_S_DRIVER, "driver"},
+    {VIRTIO_CONFIG_S_DRIVER_OK, "driver_ok"},
+    {VIRTIO_CONFIG_S_FEATURES_OK, "features_ok"},
+    {VIRTIO_CONFIG_S_NEEDS_RESET, "needs_reset"},
+    {VIRTIO_CONFIG_S_FAILED, "failed"},
+};
+
+static void dump_status(uint32_t status) {
+        fprintf(stderr, "[VIRTIO: status: write 0x%x (", status);
+        for (int i = 0; i < sizeof(status_bits) / sizeof(status_bits[0]); i++)
+                if (status_bits[i].bit & status)
+                        fprintf(stderr, "%s ", status_bits[i].name);
+        fprintf(stderr, ")]\n");
+}
+
 static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virtio_blk_dev *blk_dev) {
         uint32_t mmio_offset = (uint32_t)mmio->phys_addr - VIRTIO_BLK_MMIO_BASE;
         int err;
