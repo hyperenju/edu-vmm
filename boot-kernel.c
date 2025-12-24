@@ -13,6 +13,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/eventfd.h>
 #include <unistd.h>
 #include <errno.h>
 
@@ -82,6 +83,7 @@ struct virtio_blk_dev {
         /* static fields */
         uint32_t device_features[2];
         uint32_t irq_number; 
+        int eventfd;
         uint32_t queue_size_max; 
         int disk_fd;
         struct virtio_blk_config config;
@@ -120,6 +122,17 @@ struct virtio_blk_req {
 };
 
 #define SECTOR_SIZE 512
+
+static void virtio_raise_irq(struct virtio_blk_dev *blk_dev, uint32_t int_cause) {
+    int size;
+
+    blk_dev->state.interrupt_status |= int_cause;
+
+    size = write(blk_dev->eventfd, &(uint64_t){1}, sizeof(uint64_t));
+    if (size != sizeof(uint64_t)) {
+        fprintf(stderr, "[VIRTIO: BLK: write(2) to eventfd failed. ret = %d, expected = %d\n]", size, (int)sizeof(uint64_t));
+    }
+}
 
 void do_virtio_blk_io(struct virtio_blk_dev *blk_dev) {
     void *guest_mem = blk_dev->dev.mem;
@@ -205,15 +218,7 @@ void do_virtio_blk_io(struct virtio_blk_dev *blk_dev) {
         blk_dev->queue.last_avail_index++;
     }
 
-    blk_dev->state.interrupt_status |= VIRTIO_MMIO_INT_VRING;
-
-    struct kvm_irq_level irq = {
-        .irq = blk_dev->irq_number,
-        .level = 1, // assert
-    };
-    err = ioctl(vm_fd, KVM_IRQ_LINE, &irq);
-    if (err)
-        fprintf(stderr, "[VIRTIO: BLK: KVM_IRQ_LINE (asserting IRQ) failed]\n");
+    virtio_raise_irq(blk_dev, VIRTIO_MMIO_INT_VRING);
 }
 
 #define ROOT_FS "/home/kohei/myqemu/Fedora-Server-KVM-Desktop-42.x86_64.ext4"
@@ -258,16 +263,8 @@ static void virtio_mmio_needs_reset(struct virtio_blk_dev *blk_dev) {
         fprintf(stderr, "[VIRTIO: BLK: needs reset. requesting driver to reset "
                         "it's state\n");
         blk_dev->state.status = VIRTIO_CONFIG_S_NEEDS_RESET;
-        blk_dev->state.interrupt_status = VIRTIO_MMIO_INT_CONFIG;
 
-        struct kvm_irq_level irq = {
-            .irq = blk_dev->irq_number,
-            .level = 1,
-        };
-        int err = ioctl(blk_dev->dev.vm_fd, KVM_IRQ_LINE, &irq);
-        if (err)
-                fprintf(stderr, "[VIRTIO: BLK: KVM_IRQ_LINE "
-                                "(deasserting IRQ) failed]\n");
+        virtio_raise_irq(blk_dev, VIRTIO_MMIO_INT_CONFIG);
 }
 
 static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virtio_blk_dev *blk_dev) {
@@ -477,15 +474,9 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
         case VIRTIO_MMIO_INTERRUPT_ACK:
                 if (!mmio->is_write)
                         break;
+                fprintf(stderr, "[VIRTIO: blk: INT ACKED(%d)]\n",
+                        *(uint32_t *)mmio->data);
                 blk_dev->state.interrupt_status &= ~(*(uint32_t *)mmio->data);
-                struct kvm_irq_level irq = {
-                    .irq = blk_dev->irq_number,
-                    .level = 0, // deassert
-                };
-                int err = ioctl(blk_dev->dev.vm_fd, KVM_IRQ_LINE, &irq);
-                if (err)
-                        fprintf(stderr, "[VIRTIO: BLK: KVM_IRQ_LINE "
-                                        "(deasserting IRQ) failed]\n");
                 break;
         case VIRTIO_MMIO_STATUS:
                 if (!mmio->is_write) { /* READ */
@@ -529,6 +520,12 @@ int virtio_blk_sw_init(struct virtio_blk_dev *blk_dev, char *rootfs, void *mem, 
         if (blk_dev->disk_fd < 0) {
                 perror("open rootfs");
                 return 1;
+        }
+
+        blk_dev->eventfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+        if (blk_dev->eventfd < 0) {
+            perror("eventfd");
+            return 1;
         }
 
         fstat(blk_dev->disk_fd, &st);
@@ -640,6 +637,14 @@ int main(int argc, char *argv[]) {
         err = virtio_blk_sw_init(&blk_dev, rootfs, mem, vm_fd);
         if (err) {
                 perror("virtio_blk_sw_init");
+                return 1;
+        }
+
+        struct kvm_irqfd irqfd = {0};
+        irqfd.gsi = blk_dev.irq_number;
+        irqfd.fd = blk_dev.eventfd;
+        if (ioctl(vm_fd, KVM_IRQFD, &irqfd) < 0) {
+                perror("KVM_IRQFD");
                 return 1;
         }
 
