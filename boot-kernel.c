@@ -14,6 +14,8 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/eventfd.h>
+#include <sys/epoll.h>
+#include <pthread.h>
 #include <unistd.h>
 #include <errno.h>
 
@@ -84,6 +86,7 @@ struct virtio_blk_dev {
         uint32_t device_features[2];
         uint32_t irq_number; 
         int irqfd;
+        int ioeventfd;
         uint32_t queue_size_max; 
         int disk_fd;
         struct virtio_blk_config config;
@@ -462,9 +465,7 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
         case VIRTIO_MMIO_QUEUE_NOTIFY:
                 if (!mmio->is_write)
                         break;
-                fprintf(stderr, "[VIRTIO: blk: QUEUE (%d) NOTIFIED]\n",
-                        blk_dev->state.queue_sel);
-                do_virtio_blk_io(blk_dev);
+                // No-op, instread io_thread works
                 break;
         case VIRTIO_MMIO_INTERRUPT_STATUS:
                 if (mmio->is_write)
@@ -505,6 +506,42 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
         }
 }
 
+void *io_thread(void *arg) {
+        struct virtio_blk_dev *blk_dev = arg;
+
+        int epfd = epoll_create1(0);
+        if (epfd == -1) {
+                perror("epoll_create1");
+                exit(1);
+        }
+
+        struct epoll_event ev;
+        ev.events = EPOLLIN;
+        ev.data.fd = blk_dev->ioeventfd;
+        if (epoll_ctl(epfd, EPOLL_CTL_ADD, blk_dev->ioeventfd, &ev) < 0) {
+                perror("epoll_create1");
+                exit(1);
+        }
+
+        struct epoll_event events[10];
+        for (;;) {
+                int n = epoll_wait(epfd, events, 10, -1);
+                if (n < 0) {
+                        perror("epoll_wait");
+                        exit(1);
+                }
+                for (int i = 0; i < n; i++) {
+                        if (events[i].data.fd == blk_dev->ioeventfd) {
+                                uint64_t val;
+                                read(blk_dev->ioeventfd, &val, sizeof(val));
+                                do_virtio_blk_io(blk_dev);
+                        }
+                }
+        }
+
+        return NULL;
+}
+
 int virtio_blk_sw_init(struct virtio_blk_dev *blk_dev, char *rootfs, void *mem, int vm_fd) {
         struct stat st;
 
@@ -526,6 +563,23 @@ int virtio_blk_sw_init(struct virtio_blk_dev *blk_dev, char *rootfs, void *mem, 
         if (blk_dev->irqfd < 0) {
             perror("eventfd");
             return 1;
+        }
+
+        blk_dev->ioeventfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+        if (blk_dev->ioeventfd < 0) {
+            perror("eventfd");
+            return 1;
+        }
+
+        struct kvm_ioeventfd ioeventfd = {0};
+        ioeventfd.fd = blk_dev->ioeventfd;
+        ioeventfd.addr = VIRTIO_BLK_MMIO_BASE + VIRTIO_MMIO_QUEUE_NOTIFY;
+        ioeventfd.len = 4;
+        ioeventfd.flags = 0;
+
+        if (ioctl(blk_dev->dev.vm_fd, KVM_IOEVENTFD, &ioeventfd)) {
+                perror("KVM_IOEVENTFD");
+                return 1;
         }
 
         fstat(blk_dev->disk_fd, &st);
@@ -638,6 +692,13 @@ int main(int argc, char *argv[]) {
         if (err) {
                 perror("virtio_blk_sw_init");
                 return 1;
+        }
+
+        pthread_t tid;
+        err = pthread_create(&tid, NULL, io_thread, &blk_dev);
+        if (err) {
+            perror("pthread_create");
+            return 1;
         }
 
         struct kvm_irqfd irqfd = {0};
