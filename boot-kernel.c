@@ -66,6 +66,7 @@ struct virtio_blk_state {
         uint32_t driver_feature_sel;
         uint32_t queue_sel;
         uint32_t interrupt_status;
+        uint32_t negotiated_features[2];
 };
 
 struct virtio_dev {
@@ -79,6 +80,7 @@ struct virtio_blk_dev {
         struct virtio_queue queue;
 
         /* static fields */
+        uint32_t device_features[2];
         uint32_t irq_number; 
         uint32_t queue_size_max; 
         int disk_fd;
@@ -239,6 +241,7 @@ static void dump_status(uint32_t status) {
 
 static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virtio_blk_dev *blk_dev) {
         uint32_t mmio_offset = (uint32_t)mmio->phys_addr - VIRTIO_BLK_MMIO_BASE;
+        uint32_t sel;
 
         /* access to MMIO configuration space */
         if (mmio_offset >= VIRTIO_MMIO_CONFIG && mmio_offset < VIRTIO_MMIO_CONFIG + sizeof(struct virtio_blk_config)) {
@@ -291,14 +294,14 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
         case VIRTIO_MMIO_DEVICE_FEATURES:
                 if (mmio->is_write)
                         break;
-                if (blk_dev->state.device_feature_sel == 0) {
+
+                sel = blk_dev->state.device_feature_sel;
+                if (sel > 1) {
                         *(uint32_t *)mmio->data = 0;
-                } else if (blk_dev->state.device_feature_sel == 1) {
-                        *(uint32_t *)mmio->data = 1
-                                                  << (VIRTIO_F_VERSION_1 % 32);
-                } else {
-                        *(uint32_t *)mmio->data = 0;
+                        break;
                 }
+
+                *(uint32_t *)mmio->data = blk_dev->device_features[sel];
                 break;
         case VIRTIO_MMIO_DRIVER_FEATURES_SEL:
                 if (!mmio->is_write)
@@ -310,18 +313,20 @@ static void do_virtio_blk(typeof(((struct kvm_run *)0)->mmio) *mmio, struct virt
         case VIRTIO_MMIO_DRIVER_FEATURES:
                 if (!mmio->is_write)
                         break;
-                // Now for simplicity, don't torelate fallback.
-                // We strongly assume VIRTIO_F_VERSION_1 are accpeted by drivers
-                if (blk_dev->state.driver_feature_sel == 0) {
-                        if (*(uint32_t *)mmio->data != 0)
-                                fprintf(stderr, "[VIRTIO: blk: "
-                                                "unexpected driver features\n");
-                } else if (blk_dev->state.driver_feature_sel == 1) {
-                        if (*(uint32_t *)mmio->data !=
-                            1 << (VIRTIO_F_VERSION_1 % 32))
-                                fprintf(stderr, "[VIRTIO: blk: "
-                                                "VIRTIO_F_VERSION_1 is "
-                                                "not accepted.]\n");
+
+                sel = blk_dev->state.driver_feature_sel;
+                if (sel > 1) {
+                    break;
+                }
+
+                blk_dev->state.negotiated_features[sel] = *(uint32_t *)mmio->data;
+                if (blk_dev->state.negotiated_features[sel] !=
+                    blk_dev->device_features[sel]) {
+                        fprintf(stderr,
+                                "[VIRTIO: BLK: degraded features(sel=%d), "
+                                "offerred %d, but driver accepted %d]\n",
+                                sel, blk_dev->device_features[sel],
+                                blk_dev->state.negotiated_features[sel]);
                 }
                 break;
         case VIRTIO_MMIO_QUEUE_SEL:
@@ -462,8 +467,11 @@ int main(int argc, char *argv[]) {
         struct virtio_blk_dev blk_dev = {0};
         int err;
 
+        // sw init about blk_dev
         blk_dev.irq_number = IRQ_NUMBER;
         blk_dev.queue_size_max = QUEUE_SIZE_MAX;
+        blk_dev.device_features[0] = 0;
+        blk_dev.device_features[1] = 1 << (VIRTIO_F_VERSION_1 % 32);
 
         char cmdline[MAX_CMDLINE_LEN];
         const char *cmdline_fmt =
