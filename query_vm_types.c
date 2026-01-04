@@ -14,11 +14,6 @@ static void die(const char *msg) {
     exit(1);
 }
 
-static void check_ioctl(int ret, const char *msg) {
-    if (ret < 0)
-        die(msg);
-}
-
 char vm_type_name[][32] = {
     "KVM_X86_DEFAULT_VM", "KVM_X86_SW_PROTECTED_VM", "KVM_X86_SEV_VM",
     "KVM_X86_SEV_ES_VM",  "KVM_X86_SNP_VM",          "KVM_X86_TDX_VM",
@@ -44,11 +39,11 @@ int main(void) {
 
 
     printf("Supported VM TYPES:\n");
-    for (int i = 0; i < sizeof(vm_type_name) / sizeof(vm_type_name[0]); i++) {
+    for (size_t i = 0; i < sizeof(vm_type_name) / sizeof(vm_type_name[0]);
+         i++) {
         if (vm_types & (1 << i))
             printf("\t%s\n", vm_type_name[i]);
     }
 
-out:
     close(dev_fd);
 }
